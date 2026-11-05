@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/app/lib/supabase';
-import { Eye, EyeOff, Lock, Save, Plus, Trash2, Clock, Edit, Users, Search, X, Target } from 'lucide-react';
+import { Users, X, AlertTriangle, Trash2, CheckCircle2, Lock, Eye, EyeOff, Clock } from 'lucide-react';
 import Link from 'next/link';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface MatchRow {
   homePlayerId: string;
@@ -13,37 +14,29 @@ interface MatchRow {
   matchweek: number;
 }
 
-export default function ManagerPage() {
-  
-  const [newPlayerName, setNewPlayerName] = useState('');
-  const [loading, setLoading] = useState(false);
-  
-
-
-  // --- Feature 1: Adding Player Names ---
-  async function handleAddPlayer(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newPlayerName.trim()) return;
-
-    setLoading(true);
-    const { data, error } = await supabase
-      .from('players')
-      .insert([{ name: newPlayerName.trim() }]);
-
-    setLoading(false);
-    if (error) {
-      if (error.code === '23505') alert('A player with this name already exists.');
-      else alert('Failed to add player: ' + error.message);
-    } else {
-      alert(`Player "${newPlayerName}" successfully added.`);
-      setNewPlayerName('');
-    }
-  }
+export default function ManagerPortal() {
   const [authenticated, setAuthenticated] = useState(false);
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
+  
   const [players, setPlayers] = useState<any[]>([]);
+  const [newPlayerName, setNewPlayerName] = useState('');
+  const [loading, setLoading] = useState(false);
   const [lastLoggedAt, setLastLoggedAt] = useState<string | null>(null);
+
+  // Modal State Management
+  const [modalConfig, setModalConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'success' | 'warning' | 'confirm';
+    onConfirm?: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'success',
+  });
 
   const [rows, setRows] = useState<MatchRow[]>(
     Array(5).fill(null).map(() => ({ homePlayerId: '', awayPlayerId: '', homeScore: '', awayScore: '', matchweek: 1 }))
@@ -52,36 +45,27 @@ export default function ManagerPage() {
   useEffect(() => {
     fetchPlayers();
     fetchLastLog();
+
+    // Realtime Listener for Players Table
+    const playerChannel = supabase
+      .channel('manager-players-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'players' },
+        () => {
+          fetchPlayers();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(playerChannel);
+    };
   }, []);
 
   async function fetchPlayers() {
-  const { data, error } = await supabase
-    .from('players')
-    .select('*')
-    .order('name', { ascending: true }); // Ensures all registered players appear in dropdowns
-  if (data) {
-    setPlayers(data);
-  }
-}
-
-// --- Deletion Handler with Warning Message ---
-  async function handleDeletePlayer(playerId: string, playerName: string) {
-    const confirmed = window.confirm(
-      `WARNING: Deleting "${playerName}" means their points and match records will be deleted as well from the standings. Meanwhile, the players they played against will keep their points (their records are not affected). Do you wish to proceed?`
-    );
-
-    if (!confirmed) return;
-
-    // Delete matches where this player participated to ensure opponent points are preserved without foreign key errors
-    // (Or rely on CASCADE if set up in SQL, but explicit cleanup or cascade handles it safely)
-    const { error } = await supabase.from('players').delete().eq('id', playerId);
-
-    if (error) {
-      alert('Failed to delete player: ' + error.message);
-    } else {
-      alert(`Player "${playerName}" has been removed.`);
-      fetchPlayers();
-    }
+    const { data } = await supabase.from('players').select('*').order('name', { ascending: true });
+    if (data) setPlayers(data);
   }
 
   async function fetchLastLog() {
@@ -99,15 +83,87 @@ export default function ManagerPage() {
 
   function handleAuth(e: React.FormEvent) {
     e.preventDefault();
-    if (pin === 'Di001&') setAuthenticated(true);
-    else alert('Invalid Admin PIN');
+    if (pin === 'Di001&') {
+      setAuthenticated(true);
+    } else {
+      setModalConfig({
+        isOpen: true,
+        title: 'Authentication Failed',
+        message: 'The Manager PIN entered is incorrect. Please try again.',
+        type: 'warning',
+      });
+    }
+  }
+
+  async function handleAddPlayer(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newPlayerName.trim()) return;
+
+    setLoading(true);
+    const { error } = await supabase.from('players').insert([{ name: newPlayerName.trim() }]);
+    setLoading(false);
+
+    if (error) {
+      setModalConfig({
+        isOpen: true,
+        title: 'Registration Error',
+        message: error.code === '23505' ? 'A player with this name already exists.' : error.message,
+        type: 'warning',
+      });
+    } else {
+      const addedName = newPlayerName.trim();
+      setNewPlayerName('');
+      setModalConfig({
+        isOpen: true,
+        title: 'Player Registered',
+        message: `Successfully added "${addedName}" to the Dinaya Premier League hub.`,
+        type: 'success',
+      });
+    }
+  }
+
+  function confirmDeletePlayer(playerId: string, playerName: string) {
+    setModalConfig({
+      isOpen: true,
+      title: 'Delete Competitor',
+      message: `WARNING: Deleting "${playerName}" will remove their personal points and records from the standings. Opponents they played against will retain their points.`,
+      type: 'confirm',
+      onConfirm: () => executeDeletePlayer(playerId, playerName),
+    });
+  }
+
+  async function executeDeletePlayer(playerId: string, playerName: string) {
+    const { error } = await supabase.from('players').delete().eq('id', playerId);
+    if (error) {
+      setModalConfig({
+        isOpen: true,
+        title: 'Deletion Failed',
+        message: error.message,
+        type: 'warning',
+      });
+    } else {
+      setModalConfig({
+        isOpen: true,
+        title: 'Player Removed',
+        message: `"${playerName}" has been successfully removed from the system.`,
+        type: 'success',
+      });
+    }
   }
 
   async function handleSubmitMatches(e: React.FormEvent) {
     e.preventDefault();
     const validRows = rows.filter(r => r.homePlayerId && r.awayPlayerId && r.homeScore !== '' && r.awayScore !== '');
 
-    if (validRows.length === 0) return alert('Fill at least one match row.');
+    if (validRows.length === 0) {
+      setModalConfig({
+        isOpen: true,
+        title: 'Incomplete Entry',
+        message: 'Please fill out at least one complete match row before submitting.',
+        type: 'warning',
+      });
+      return;
+    }
 
     const payload = validRows.map(r => ({
       home_player_id: r.homePlayerId,
@@ -119,13 +175,23 @@ export default function ManagerPage() {
 
     const { error } = await supabase.from('matches').insert(payload);
     if (!error) {
-      alert('Matches successfully recorded!');
+      setModalConfig({
+        isOpen: true,
+        title: 'Matches Logged',
+        message: 'All match results have been successfully recorded and synced live!',
+        type: 'success',
+      });
       setRows(Array(5).fill(null).map(() => ({ homePlayerId: '', awayPlayerId: '', homeScore: '', awayScore: '', matchweek: 1 })));
       fetchLastLog();
+    } else {
+      setModalConfig({
+        isOpen: true,
+        title: 'Submission Error',
+        message: error.message,
+        type: 'warning',
+      });
     }
   }
-
-  
 
   if (!authenticated) {
     return (
@@ -134,7 +200,6 @@ export default function ManagerPage() {
           <Lock className="w-12 h-12 text-epl-pink mx-auto" />
           <h2 className="text-xl font-bold">Admin Portal Access</h2>
           
-          {/* Password with View/Hide Feature */}
           <div className="relative">
             <input
               type={showPin ? 'text' : 'password'}
@@ -156,86 +221,90 @@ export default function ManagerPage() {
             Authenticate
           </button>
         </form>
+
+        <Modal modal={modalConfig} onClose={() => setModalConfig(prev => ({ ...prev, isOpen: false }))} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-epl-lightBg dark:bg-damascus-dark text-epl-textLight dark:text-white p-4 md:p-8 flex flex-col justify-between">
+    <div className="min-h-screen bg-epl-lightBg dark:bg-damascus-dark text-white p-6 md:p-12 space-y-8 flex flex-col justify-between">
       <div className="max-w-5xl mx-auto w-full space-y-8">
-        <div className="flex justify-between items-center">
-          <h1 className="text-2xl font-black text-epl-pink">Hub Manager Entry Portal</h1>
+        <header className="flex justify-between items-center border-b border-white/10 pb-5">
+          <h1 className="text-3xl font-black text-epl-pink">Hub Manager Portal</h1>
           <div className="flex gap-3">
-          <Link href="/manager/edit-results" className="text-xs bg-black/10 dark:bg-white/10 px-4 py-2 rounded-lg">Edit Match Results</Link>
-          <Link href="/" className="text-xs bg-black/10 dark:bg-white/10 px-4 py-2 rounded-lg">Back to Standings</Link>
+            <Link href="/manager/edit-results" className="px-5 py-2.5 rounded-xl bg-epl-purpleLight text-sm font-bold border border-white/10 hover:bg-white/10 transition-colors">
+              Edit Previous Results
+            </Link>
+            <Link href="/" className="text-xs bg-white/10 px-4 py-2 rounded-xl flex items-center font-bold">View Table</Link>
           </div>
-        </div>
+        </header>
 
-        {/* ---  PLAYER SECTION --- */}
-      <section className="bg-white/5 p-6 rounded-2xl border border-white/10 mb-8 space-y-4">
-        <div className="flex items-center gap-3">
-          <Users className="w-6 h-6 text-epl-green" />
-          <h2 className="text-xl font-extrabold">Competitor Management</h2>
-        </div>
-        <p className="text-sm text-white/60">Enter the name of the new competitor joining the Dinaya Premier League.</p>
-        
-        <form onSubmit={handleAddPlayer} className="flex gap-3 max-w-xl">
-          <input
-            type="text"
-            placeholder="E.g., John Doe"
-            value={newPlayerName}
-            onChange={(e) => setNewPlayerName(e.target.value)}
-            className="flex-1 bg-black/40 border border-white/20 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-epl-pink"
-          />
-          <button type="submit" disabled={loading} className="px-6 py-3 rounded-xl bg-epl-pink font-bold text-sm hover:brightness-110 disabled:opacity-50">
-            {loading ? 'Adding...' : 'Register Player'}
-          </button>
-        </form>
-      </section>
+        {/* --- REGISTER PLAYER SECTION --- */}
+        <section className="bg-epl-purple p-6 rounded-2xl border border-white/10 space-y-4 shadow-xl">
+          <div className="flex items-center gap-3">
+            <Users className="w-6 h-6 text-epl-green" />
+            <h2 className="text-xl font-extrabold">Competitor Management</h2>
+          </div>
+          <p className="text-sm text-white/60">Register new players so they appear on the live standings immediately with 0 points.</p>
+          
+          <form onSubmit={handleAddPlayer} className="flex gap-3 max-w-xl">
+            <input
+              type="text"
+              placeholder="E.g., John Doe"
+              value={newPlayerName}
+              onChange={(e) => setNewPlayerName(e.target.value)}
+              className="flex-1 bg-black/40 border border-white/20 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-epl-pink"
+            />
+            <button type="submit" disabled={loading} className="px-6 py-3 rounded-xl bg-epl-pink font-bold text-sm hover:brightness-110 disabled:opacity-50">
+              {loading ? 'Adding...' : 'Register Player'}
+            </button>
+          </form>
+        </section>
 
-      {/* --- REGISTERED PLAYERS TABLE (3 rows per column grid layout) --- */}
-      <section className="bg-epl-purple/80 p-6 rounded-2xl border border-white/10 space-y-4 shadow-xl">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-black text-epl-green flex items-center gap-2">
-            <Users className="w-5 h-5" /> Registered Players in System ({players.length})
-          </h3>
-        </div>
+        {/* --- REGISTERED PLAYERS TABLE (3 rows per column grid layout) --- */}
+        <section className="bg-epl-purple/80 p-6 rounded-2xl border border-white/10 space-y-4 shadow-xl">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-black text-epl-green flex items-center gap-2">
+              <Users className="w-5 h-5" /> Registered Players in System ({players.length})
+            </h3>
+            <span className="text-xs text-white/50">Live sync active</span>
+          </div>
 
-        {players.length === 0 ? (
-          <p className="text-sm text-white/50 py-4 text-center">No players registered yet.</p>
-        ) : (
-          /* Multi-column grid structured to display 3 items vertically per column */
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-h-[400px] overflow-y-auto pr-2">
-            {players.map((player) => (
-              <div 
-                key={player.id} 
-                className="flex items-center justify-between bg-black/40 border border-white/10 p-3 rounded-xl hover:border-epl-pink/50 transition-all"
-              >
-                <div className="flex items-center gap-3 overflow-hidden">
-                  <div className="w-8 h-8 rounded-full bg-epl-purpleLight text-epl-green flex items-center justify-center text-xs font-black shrink-0 border border-white/10">
-                    {player.name.substring(0, 2).toUpperCase()}
-                  </div>
-                  <span className="font-bold text-sm truncate">{player.name}</span>
-                </div>
-
-                {/* Delete Button with 'X' */}
-                <button
-                  onClick={() => handleDeletePlayer(player.id, player.name)}
-                  title="Delete Player"
-                  className="p-2 rounded-lg bg-white/5 hover:bg-epl-pink text-white/70 hover:text-white transition-colors shrink-0"
+          {players.length === 0 ? (
+            <p className="text-sm text-white/50 py-4 text-center">No players registered yet.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-h-[400px] overflow-y-auto pr-2">
+              {players.map((player) => (
+                <div 
+                  key={player.id} 
+                  className="flex items-center justify-between bg-black/40 border border-white/10 p-3 rounded-xl hover:border-epl-pink/50 transition-all"
                 >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+                  <div className="flex items-center gap-3 overflow-hidden">
+                    <div className="w-8 h-8 rounded-full bg-epl-purpleLight text-epl-green flex items-center justify-center text-xs font-black shrink-0 border border-white/10">
+                      {player.name.substring(0, 2).toUpperCase()}
+                    </div>
+                    <span className="font-bold text-sm truncate">{player.name}</span>
+                  </div>
 
-        {/* Match Logger Form */}
-        <form onSubmit={handleSubmitMatches} className="space-y-4">
+                  <button
+                    onClick={() => confirmDeletePlayer(player.id, player.name)}
+                    title="Delete Player"
+                    className="p-2 rounded-lg bg-white/5 hover:bg-epl-pink text-white/70 hover:text-white transition-colors shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* --- MATCH LOGGING SECTION --- */}
+        <form onSubmit={handleSubmitMatches} className="space-y-4 bg-epl-purple p-6 rounded-2xl border border-white/10 shadow-xl">
+          <h3 className="text-lg font-black text-epl-pink mb-4">Batch Match Logger</h3>
           {rows.map((row, idx) => (
-            <div key={idx} className="bg-epl-purple p-4 rounded-xl border border-white/10 flex flex-wrap items-center gap-3 text-white">
+            <div key={idx} className="bg-black/40 p-4 rounded-xl border border-white/10 flex flex-wrap items-center gap-3 text-white">
               <span className="text-xs font-bold text-epl-green w-6">#{idx + 1}</span>
               
               <select
@@ -245,7 +314,7 @@ export default function ManagerPage() {
                   updated[idx].matchweek = parseInt(e.target.value, 10);
                   setRows(updated);
                 }}
-                className="bg-black/40 border border-white/20 rounded-lg p-2 text-xs font-bold"
+                className="bg-black/60 border border-white/20 rounded-lg p-2 text-xs font-bold"
               >
                 {Array.from({ length: 12 }).map((_, i) => (
                   <option key={i + 1} value={i + 1}>MW{i + 1}</option>
@@ -259,7 +328,7 @@ export default function ManagerPage() {
                   updated[idx].homePlayerId = e.target.value;
                   setRows(updated);
                 }}
-                className="flex-1 bg-black/40 border border-white/20 rounded-lg p-2 text-xs"
+                className="flex-1 bg-black/60 border border-white/20 rounded-lg p-2 text-xs"
               >
                 <option value="">Home Player</option>
                 {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -274,7 +343,7 @@ export default function ManagerPage() {
                   updated[idx].homeScore = e.target.value;
                   setRows(updated);
                 }}
-                className="w-14 text-center bg-black/40 border border-white/20 rounded-lg p-2 text-sm font-bold"
+                className="w-14 text-center bg-black/60 border border-white/20 rounded-lg p-2 text-sm font-bold"
               />
 
               <span className="font-bold text-white/50">VS</span>
@@ -288,7 +357,7 @@ export default function ManagerPage() {
                   updated[idx].awayScore = e.target.value;
                   setRows(updated);
                 }}
-                className="w-14 text-center bg-black/40 border border-white/20 rounded-lg p-2 text-sm font-bold"
+                className="w-14 text-center bg-black/60 border border-white/20 rounded-lg p-2 text-sm font-bold"
               />
 
               <select
@@ -298,7 +367,7 @@ export default function ManagerPage() {
                   updated[idx].awayPlayerId = e.target.value;
                   setRows(updated);
                 }}
-                className="flex-1 bg-black/40 border border-white/20 rounded-lg p-2 text-xs"
+                className="flex-1 bg-black/60 border border-white/20 rounded-lg p-2 text-xs"
               >
                 <option value="">Away Player</option>
                 {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -306,17 +375,89 @@ export default function ManagerPage() {
             </div>
           ))}
 
-          <button type="submit" className="w-full py-3.5 rounded-xl bg-epl-green text-epl-purple font-black hover:brightness-110">
+          <button type="submit" className="w-full py-3.5 rounded-xl bg-epl-green text-epl-purple font-black hover:brightness-110 transition-all">
             Submit All Matches
           </button>
         </form>
       </div>
 
       {/* Footer showcasing Last Recorded Log */}
-      <footer className="mt-12 text-center text-xs opacity-60 flex items-center justify-center gap-2 border-t border-black/10 dark:border-white/10 pt-4">
+      <footer className="mt-12 text-center text-xs opacity-60 flex items-center justify-center gap-2 border-t border-white/10 pt-4">
         <Clock className="w-4 h-4 text-epl-pink" />
         <span>Last match log recorded at: <strong>{lastLoggedAt || 'No match logs recorded yet'}</strong></span>
       </footer>
+
+      {/* Gorgeous Modal Component */}
+      <Modal modal={modalConfig} onClose={() => setModalConfig(prev => ({ ...prev, isOpen: false }))} />
     </div>
+  );
+}
+
+// Reusable Sub-component for Smooth Modals
+function Modal({ modal, onClose }: { modal: any; onClose: () => void }) {
+  return (
+    <AnimatePresence>
+      {modal.isOpen && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.6 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black backdrop-blur-sm z-50"
+          />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            className="fixed inset-0 m-auto w-full max-w-md h-fit bg-epl-purple border border-white/20 p-6 rounded-2xl shadow-2xl z-50 text-white space-y-4"
+          >
+            <div className="flex items-center gap-3">
+              {modal.type === 'warning' || modal.type === 'confirm' ? (
+                <div className="p-2 rounded-xl bg-epl-pink/20 text-epl-pink">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+              ) : (
+                <div className="p-2 rounded-xl bg-epl-green/20 text-epl-green">
+                  <CheckCircle2 className="w-6 h-6" />
+                </div>
+              )}
+              <h3 className="text-lg font-black">{modal.title}</h3>
+            </div>
+
+            <p className="text-sm text-white/80 leading-relaxed">{modal.message}</p>
+
+            <div className="flex gap-3 pt-2">
+              {modal.type === 'confirm' ? (
+                <>
+                  <button
+                    onClick={onClose}
+                    className="flex-1 py-2.5 rounded-xl bg-white/10 text-xs font-bold hover:bg-white/20 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      modal.onConfirm?.();
+                      onClose();
+                    }}
+                    className="flex-1 py-2.5 rounded-xl bg-epl-pink text-xs font-bold hover:brightness-110 transition-colors"
+                  >
+                    Confirm Delete
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={onClose}
+                  className="w-full py-2.5 rounded-xl bg-white text-epl-purple text-xs font-black hover:bg-epl-green transition-colors"
+                >
+                  Okay
+                </button>
+              )}
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
   );
 }

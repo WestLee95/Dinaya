@@ -24,17 +24,15 @@ export default function EditResultsPage() {
     fetchBaseData();
   }, []);
 
-  // Fetch initial data (players) and run initial search
   async function fetchBaseData() {
     const { data: playerData } = await supabase.from('players').select('id, name');
     if (playerData) setPlayers(playerData);
     handleSearch();
   }
 
-  // --- Feature 2: Searching & Filtering ---
   async function handleSearch() {
     setLoading(true);
-    setEditingMatchId(null); // Close any active edit row
+    setEditingMatchId(null);
     
     let query = supabase
       .from('matches')
@@ -51,21 +49,15 @@ export default function EditResultsPage() {
       `)
       .order('played_at', { ascending: false });
 
-    // Apply Player Search (requires complex joins in Supabase)
-    // Simpler method: fetch all relevant matches and filter client side if needed,
-    // or use a PostgreSQL function for complex queries. For simplicity here:
     if (searchPlayer.trim()) {
       query = query.or(`home.name.ilike.%${searchPlayer.trim()}%,away.name.ilike.%${searchPlayer.trim()}%`);
     }
 
-    // Apply Matchweek Filter
     if (filterMatchweek !== 'all') {
       query = query.eq('matchweek', parseInt(filterMatchweek, 10));
     }
 
-    // Apply Specific Date Filter
     if (filterDate) {
-      // Supabase date filtering depends on played_at format. This handles simple date compare.
       query = query.gte('played_at', filterDate + 'T00:00:00.000Z')
                    .lte('played_at', filterDate + 'T23:59:59.999Z');
     }
@@ -75,14 +67,12 @@ export default function EditResultsPage() {
     setLoading(false);
   }
 
-  // Function to initialize the edit state for a specific row
   function startEditing(match: any) {
     setEditingMatchId(match.id);
     setEditedHomeScore(match.home_score.toString());
     setEditedAwayScore(match.away_score.toString());
   }
 
-  // --- Feature 3: Editing Match Result ---
   async function saveMatchEdit(matchId: string) {
     const homeScore = parseInt(editedHomeScore, 10);
     const awayScore = parseInt(editedAwayScore, 10);
@@ -98,17 +88,36 @@ export default function EditResultsPage() {
       .update({
         home_score: homeScore,
         away_score: awayScore,
-        last_updated_at: new Date().toISOString()
       })
       .eq('id', matchId);
 
     setLoading(false);
     if (!error) {
       alert('Match result successfully updated.');
-      setEditingMatchId(null); // Close edit row
-      handleSearch(); // Refresh results to show the change
+      setEditingMatchId(null);
+      handleSearch();
     } else {
       alert('Failed to update match: ' + error.message);
+    }
+  }
+
+  // --- Deletion Handler for Match Results ---
+  async function handleDeleteMatch(matchId: string) {
+    const confirmed = window.confirm(
+      "WARNING: Are you sure you want to delete this match result? This will remove the match record and adjust the players' points accordingly."
+    );
+
+    if (!confirmed) return;
+
+    setLoading(true);
+    const { error } = await supabase.from('matches').delete().eq('id', matchId);
+    setLoading(false);
+
+    if (error) {
+      alert('Failed to delete match result: ' + error.message);
+    } else {
+      alert('Match result successfully deleted.');
+      handleSearch(); // Refresh list
     }
   }
 
@@ -123,20 +132,17 @@ export default function EditResultsPage() {
 
       {/* --- SEARCH & FILTER BAR --- */}
       <section className="bg-epl-purple p-5 rounded-2xl border border-white/10 mb-8 grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-        
-        {/* Search Player Name */}
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-white/70 flex items-center gap-1.5"><Search className="w-3.5 h-3.5" /> Player Search</label>
           <input
             type="text"
-            placeholder="Search Player (Home or Away)..."
+            placeholder="Search Player..."
             value={searchPlayer}
             onChange={(e) => setSearchPlayer(e.target.value)}
             className="w-full bg-black/40 border border-white/20 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-epl-pink"
           />
         </div>
 
-        {/* Filter Matchweek */}
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-white/70 flex items-center gap-1.5"><Filter className="w-3.5 h-3.5" /> Matchweek (MW)</label>
           <select
@@ -149,7 +155,6 @@ export default function EditResultsPage() {
           </select>
         </div>
 
-        {/* Filter Date */}
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-white/70 flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> Specific Date</label>
           <input
@@ -160,7 +165,6 @@ export default function EditResultsPage() {
           />
         </div>
 
-        {/* Search Action Button */}
         <button
           onClick={handleSearch}
           disabled={loading}
@@ -192,9 +196,8 @@ export default function EditResultsPage() {
                 <tr key={match.id} className="hover:bg-white/5 transition-colors">
                   <td className="py-4 px-4 text-center font-bold text-epl-pink">MW{match.matchweek}</td>
                   <td className="py-4 px-3 text-center text-xs opacity-60">{new Date(match.played_at).toLocaleDateString()}</td>
-                  <td className="py-4 px-6 text-right font-bold">{match.home.name}</td>
+                  <td className="py-4 px-6 text-right font-bold">{match.home?.name || 'Unknown'}</td>
                   
-                  {/* Score Column: Standard or Editable */}
                   <td className="py-4 px-3 text-center font-black text-lg text-white">
                     {editingMatchId === match.id ? (
                       <div className="flex items-center gap-1 justify-center max-w-24 mx-auto">
@@ -217,23 +220,31 @@ export default function EditResultsPage() {
                     )}
                   </td>
                   
-                  <td className="py-4 px-6 text-left font-bold">{match.away.name}</td>
+                  <td className="py-4 px-6 text-left font-bold">{match.away?.name || 'Unknown'}</td>
                   
-                  {/* Actions Column: Edit or Save/Cancel */}
+                  {/* Actions Column: Edit, Save/Cancel, and Delete X Icon */}
                   <td className="py-4 px-3 text-center">
                     {editingMatchId === match.id ? (
                       <div className="flex items-center gap-2 justify-center">
-                        <button onClick={() => saveMatchEdit(match.id)} className="p-1.5 rounded-lg bg-epl-green hover:brightness-110">
+                        <button onClick={() => saveMatchEdit(match.id)} className="p-1.5 rounded-lg bg-epl-green hover:brightness-110" title="Save">
                           <Save className="w-3.5 h-3.5 text-epl-purple" />
                         </button>
-                        <button onClick={() => setEditingMatchId(null)} className="p-1.5 rounded-lg bg-black/50 hover:bg-white/10">
+                        <button onClick={() => setEditingMatchId(null)} className="p-1.5 rounded-lg bg-black/50 hover:bg-white/10" title="Cancel">
                           <X className="w-3.5 h-3.5 text-white/70" />
                         </button>
                       </div>
                     ) : (
-                      <button onClick={() => startEditing(match)} className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10">
-                        <Edit2 className="w-3.5 h-3.5 text-epl-green" />
-                      </button>
+                      <div className="flex items-center gap-2 justify-center">
+                        {/* Edit Pen Icon */}
+                        <button onClick={() => startEditing(match)} className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10" title="Edit Result">
+                          <Edit2 className="w-3.5 h-3.5 text-epl-green" />
+                        </button>
+                        
+                        {/* Delete 'X' Icon */}
+                        <button onClick={() => handleDeleteMatch(match.id)} className="p-1.5 rounded-lg bg-white/5 hover:bg-epl-pink text-white/70 hover:text-white transition-colors" title="Delete Result">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -242,7 +253,6 @@ export default function EditResultsPage() {
           </table>
         </div>
       </section>
-
     </div>
   );
 }
