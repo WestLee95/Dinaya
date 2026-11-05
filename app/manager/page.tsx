@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/app/lib/supabase';
-import { Eye, EyeOff, Lock, Save, Plus, Trash2, Clock } from 'lucide-react';
+import { Eye, EyeOff, Lock, Save, Plus, Trash2, Clock, Edit, Users, Search, X, Target } from 'lucide-react';
 import Link from 'next/link';
 
 interface MatchRow {
@@ -14,6 +14,31 @@ interface MatchRow {
 }
 
 export default function ManagerPage() {
+  
+  const [newPlayerName, setNewPlayerName] = useState('');
+  const [loading, setLoading] = useState(false);
+  
+
+
+  // --- Feature 1: Adding Player Names ---
+  async function handleAddPlayer(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newPlayerName.trim()) return;
+
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('players')
+      .insert([{ name: newPlayerName.trim() }]);
+
+    setLoading(false);
+    if (error) {
+      if (error.code === '23505') alert('A player with this name already exists.');
+      else alert('Failed to add player: ' + error.message);
+    } else {
+      alert(`Player "${newPlayerName}" successfully added.`);
+      setNewPlayerName('');
+    }
+  }
   const [authenticated, setAuthenticated] = useState(false);
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
@@ -30,8 +55,33 @@ export default function ManagerPage() {
   }, []);
 
   async function fetchPlayers() {
-    const { data } = await supabase.from('players').select('*').order('name');
-    if (data) setPlayers(data);
+  const { data, error } = await supabase
+    .from('players')
+    .select('*')
+    .order('name', { ascending: true }); // Ensures all registered players appear in dropdowns
+  if (data) {
+    setPlayers(data);
+  }
+}
+
+// --- Deletion Handler with Warning Message ---
+  async function handleDeletePlayer(playerId: string, playerName: string) {
+    const confirmed = window.confirm(
+      `WARNING: Deleting "${playerName}" means their points and match records will be deleted as well from the standings. Meanwhile, the players they played against will keep their points (their records are not affected). Do you wish to proceed?`
+    );
+
+    if (!confirmed) return;
+
+    // Delete matches where this player participated to ensure opponent points are preserved without foreign key errors
+    // (Or rely on CASCADE if set up in SQL, but explicit cleanup or cascade handles it safely)
+    const { error } = await supabase.from('players').delete().eq('id', playerId);
+
+    if (error) {
+      alert('Failed to delete player: ' + error.message);
+    } else {
+      alert(`Player "${playerName}" has been removed.`);
+      fetchPlayers();
+    }
   }
 
   async function fetchLastLog() {
@@ -75,6 +125,8 @@ export default function ManagerPage() {
     }
   }
 
+  
+
   if (!authenticated) {
     return (
       <div className="min-h-screen bg-epl-lightBg dark:bg-damascus-dark flex items-center justify-center p-4">
@@ -113,8 +165,72 @@ export default function ManagerPage() {
       <div className="max-w-5xl mx-auto w-full space-y-8">
         <div className="flex justify-between items-center">
           <h1 className="text-2xl font-black text-epl-pink">Hub Manager Entry Portal</h1>
+          <div className="flex gap-3">
+          <Link href="/manager/edit-results" className="text-xs bg-black/10 dark:bg-white/10 px-4 py-2 rounded-lg">Edit Match Results</Link>
           <Link href="/" className="text-xs bg-black/10 dark:bg-white/10 px-4 py-2 rounded-lg">Back to Standings</Link>
+          </div>
         </div>
+
+        {/* ---  PLAYER SECTION --- */}
+      <section className="bg-white/5 p-6 rounded-2xl border border-white/10 mb-8 space-y-4">
+        <div className="flex items-center gap-3">
+          <Users className="w-6 h-6 text-epl-green" />
+          <h2 className="text-xl font-extrabold">Competitor Management</h2>
+        </div>
+        <p className="text-sm text-white/60">Enter the name of the new competitor joining the Dinaya Premier League.</p>
+        
+        <form onSubmit={handleAddPlayer} className="flex gap-3 max-w-xl">
+          <input
+            type="text"
+            placeholder="E.g., John Doe"
+            value={newPlayerName}
+            onChange={(e) => setNewPlayerName(e.target.value)}
+            className="flex-1 bg-black/40 border border-white/20 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-epl-pink"
+          />
+          <button type="submit" disabled={loading} className="px-6 py-3 rounded-xl bg-epl-pink font-bold text-sm hover:brightness-110 disabled:opacity-50">
+            {loading ? 'Adding...' : 'Register Player'}
+          </button>
+        </form>
+      </section>
+
+      {/* --- REGISTERED PLAYERS TABLE (3 rows per column grid layout) --- */}
+      <section className="bg-epl-purple/80 p-6 rounded-2xl border border-white/10 space-y-4 shadow-xl">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-black text-epl-green flex items-center gap-2">
+            <Users className="w-5 h-5" /> Registered Players in System ({players.length})
+          </h3>
+        </div>
+
+        {players.length === 0 ? (
+          <p className="text-sm text-white/50 py-4 text-center">No players registered yet.</p>
+        ) : (
+          /* Multi-column grid structured to display 3 items vertically per column */
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-h-[400px] overflow-y-auto pr-2">
+            {players.map((player) => (
+              <div 
+                key={player.id} 
+                className="flex items-center justify-between bg-black/40 border border-white/10 p-3 rounded-xl hover:border-epl-pink/50 transition-all"
+              >
+                <div className="flex items-center gap-3 overflow-hidden">
+                  <div className="w-8 h-8 rounded-full bg-epl-purpleLight text-epl-green flex items-center justify-center text-xs font-black shrink-0 border border-white/10">
+                    {player.name.substring(0, 2).toUpperCase()}
+                  </div>
+                  <span className="font-bold text-sm truncate">{player.name}</span>
+                </div>
+
+                {/* Delete Button with 'X' */}
+                <button
+                  onClick={() => handleDeletePlayer(player.id, player.name)}
+                  title="Delete Player"
+                  className="p-2 rounded-lg bg-white/5 hover:bg-epl-pink text-white/70 hover:text-white transition-colors shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
         {/* Match Logger Form */}
         <form onSubmit={handleSubmitMatches} className="space-y-4">
